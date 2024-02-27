@@ -41,6 +41,8 @@ var invokeModeAllowList = []string{
 }
 
 func initCJSLexerWorkDirectory() (err error) {
+
+	log.Info("initializing cjs lexer...")
 	wd := path.Join(cfg.WorkDir, "ns")
 	err = ensureDir(wd)
 	if err != nil {
