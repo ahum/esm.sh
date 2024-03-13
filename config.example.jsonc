@@ -82,5 +82,10 @@
     "scopes": [{
       "name": "@your_scope"
     }]
-  }
+  },
+
+  // The new fetch falls back to downoading the tarball of the package 
+  // to reade the package.json file if the package.json file is not found
+  // You can also set `USE_NEW_FETCH` environment variable to enable it.
+  "useNewFetch" : true
 }

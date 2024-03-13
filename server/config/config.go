@@ -34,6 +34,7 @@ type Config struct {
 	NpmUser          string    `json:"npmUser,omitempty"`
 	NpmPassword      string    `json:"npmPassword,omitempty"`
 	NoCompress       bool      `json:"noCompress,omitempty"`
+	UseNewFetch      bool      `json:"useNewFetch,omitempty"`
 }
 
 type BanList struct {
@@ -186,6 +187,11 @@ func fixConfig(c *Config) *Config {
 	if c.AuthSecret == "" {
 		c.AuthSecret = os.Getenv("SERVER_AUTH_SECRET")
 	}
+
+	if !c.UseNewFetch {
+		c.UseNewFetch = os.Getenv("USE_NEW_FETCH") == "true"
+	}
+
 	return c
 }
 

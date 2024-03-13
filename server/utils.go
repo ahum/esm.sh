@@ -1,12 +1,16 @@
 package server
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -243,4 +247,61 @@ func concatBytes(a, b []byte) []byte {
 
 func jsDataUrl(code string) string {
 	return fmt.Sprintf("data:text/javascript;base64,%s", base64.StdEncoding.EncodeToString([]byte(code)))
+}
+
+func KeysFromMap[K comparable, V comparable](m map[K]V) []K {
+	keys := make([]K, len(m))
+	i := 0
+	for k := range m {
+		keys[i] = k
+		i++
+	}
+	return keys
+}
+
+func FilenameFromUrl(urlstr string) string {
+	u, err := url.Parse(urlstr)
+	if err != nil {
+		log.Fatal("Error due to parsing url: ", err)
+	}
+	x, _ := url.QueryUnescape(u.EscapedPath())
+	return filepath.Base(x)
+}
+
+func ExtractTarGz(gzipStream io.Reader) error {
+	uncompressedStream, err := gzip.NewReader(gzipStream)
+	if err != nil {
+		return err
+	}
+
+	tarReader := tar.NewReader(uncompressedStream)
+	var header *tar.Header
+	for header, err = tarReader.Next(); err == nil; header, err = tarReader.Next() {
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.Mkdir(header.Name, 0755); err != nil {
+				return fmt.Errorf("ExtractTarGz: Mkdir() failed: %w", err)
+			}
+		case tar.TypeReg:
+			outFile, err := os.Create(header.Name)
+			if err != nil {
+				return fmt.Errorf("ExtractTarGz: Create() failed: %w", err)
+			}
+
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				// outFile.Close error omitted as Copy error is more interesting at this point
+				outFile.Close()
+				return fmt.Errorf("ExtractTarGz: Copy() failed: %w", err)
+			}
+			if err := outFile.Close(); err != nil {
+				return fmt.Errorf("ExtractTarGz: Close() failed: %w", err)
+			}
+		default:
+			return fmt.Errorf("ExtractTarGz: uknown type: %b in %s", header.Typeflag, header.Name)
+		}
+	}
+	if err != io.EOF {
+		return fmt.Errorf("ExtractTarGz: Next() failed: %w", err)
+	}
+	return nil
 }

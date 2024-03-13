@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -14,9 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/esm-dev/esm.sh/server/storage"
-
 	"github.com/Masterminds/semver/v3"
+	"github.com/esm-dev/esm.sh/server/storage"
+	"github.com/esm-dev/esm.sh/server/tgz"
+
 	"github.com/ije/gox/utils"
 	"github.com/ije/gox/valid"
 )
@@ -24,10 +26,56 @@ import (
 // ref https://github.com/npm/validate-npm-package-name
 var npmNaming = valid.Validator{valid.FromTo{'a', 'z'}, valid.FromTo{'A', 'Z'}, valid.FromTo{'0', '9'}, valid.Eq('.'), valid.Eq('-'), valid.Eq('_')}
 
+type NameVersion struct {
+	Name    string
+	Version string
+}
+
+func (nv NameVersion) String() string {
+	return nv.Name + "@" + nv.Version
+}
+
+func (nv NameVersion) IsFullVersion() bool {
+	return regexpFullVersion.MatchString(nv.Version)
+}
+
+func NewNameVersion(name string, version string) NameVersion {
+
+	a := strings.Split(strings.Trim(name, "/"), "/")
+	name = a[0]
+	if strings.HasPrefix(name, "@") && len(a) > 1 {
+		name = a[0] + "/" + a[1]
+	}
+
+	if strings.HasPrefix(version, "=") || strings.HasPrefix(version, "v") {
+		version = version[1:]
+	}
+	if version == "" {
+		version = "latest"
+	}
+
+	return NameVersion{name, version}
+}
+
 // NpmPackageVerions defines versions of a NPM package
 type NpmPackageVerions struct {
 	DistTags map[string]string         `json:"dist-tags"`
 	Versions map[string]NpmPackageInfo `json:"versions"`
+}
+
+type Dist struct {
+	Shasum  string `json:"shasum"`
+	Tarball string `json:"tarball"`
+}
+
+type PkgVersion struct {
+	Dist Dist `json:"dist"`
+}
+
+type Packument struct {
+	Name     string                `json:"name"`
+	DistTags map[string]string     `json:"dist-tags"`
+	Versions map[string]PkgVersion `json:"versions"`
 }
 
 // NpmPackageJSON defines the package.json of NPM
@@ -197,7 +245,119 @@ func getPackageInfo(wd string, name string, version string) (info NpmPackageInfo
 	return
 }
 
+func fetchPackument(name string) (packument Packument, err error) {
+
+	cacheKey := fmt.Sprintf("npm:packument:%s", name)
+
+	log.Debugf("fetchPackument: %s, cacheKey: %s", name, cacheKey)
+
+	lock := getFetchLock(cacheKey)
+	lock.Lock()
+
+	defer lock.Unlock()
+
+	// check cache firstly
+	if cache != nil {
+		var data []byte
+		data, err = cache.Get(cacheKey)
+		if err == nil && json.Unmarshal(data, &packument) == nil {
+			return
+		}
+		if err != nil && err != storage.ErrNotFound && err != storage.ErrExpired {
+			log.Error("cache:", err)
+		}
+	}
+
+	url := createUrl(name, "")
+
+	req, err := createFetchRequest(url)
+
+	if err != nil {
+		return
+	}
+
+	resp, err := httpClient.Do(req)
+
+	if err != nil {
+		return
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 || resp.StatusCode == 401 {
+		err = fmt.Errorf("npm: package '%s' not found", name)
+		return
+	}
+
+	if resp.StatusCode != 200 {
+		ret, _ := io.ReadAll(resp.Body)
+		err = fmt.Errorf("npm: could not get metadata of package '%s' (%s: %s)", name, resp.Status, string(ret))
+		return
+	}
+
+	err = json.NewDecoder(resp.Body).Decode(&packument)
+
+	if err != nil {
+		return
+	}
+	log.Debugf("cache.Set .. cacheKey: %s, packument: %s", cacheKey, packument)
+
+	cache.Set(cacheKey, utils.MustEncodeJSON(packument), 2*time.Hour)
+	return
+}
+
+func createUrl(name string, version string) string {
+
+	url := cfg.NpmRegistry + name
+	if cfg.NpmRegistryScope != "" {
+		isInScope := strings.HasPrefix(name, cfg.NpmRegistryScope)
+		if !isInScope {
+			url = "https://registry.npmjs.org/" + name
+		}
+	}
+
+	if version != "" {
+		url += "/" + version
+	}
+	log.Debugf("pkg: %s scope %s", name, url)
+	return url
+}
+
+func createFetchRequest(url string) (req *http.Request, err error) {
+
+	/**
+	 * Note: using the exact version doesnt work with
+	 * github's pkg registry. Instead you need to call the package
+	 * then pull the data out of that.
+	 * This would also work w/ npmjs?
+	 */
+	req, err = http.NewRequest("GET", url, nil)
+
+	if err != nil {
+		return
+	}
+
+	if cfg.NpmToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.NpmToken)
+	}
+
+	if cfg.NpmUser != "" && cfg.NpmPassword != "" {
+		req.SetBasicAuth(cfg.NpmUser, cfg.NpmPassword)
+	}
+
+	return
+}
 func fetchPackageInfo(name string, version string) (info NpmPackageInfo, err error) {
+
+	if cfg.UseNewFetch {
+		return newFetchPackageInfo(name, version)
+	} else {
+		return oldFetchPackageInfo(name, version)
+	}
+}
+
+// This is the original function
+func oldFetchPackageInfo(name string, version string) (info NpmPackageInfo, err error) {
 	a := strings.Split(strings.Trim(name, "/"), "/")
 	name = a[0]
 	if strings.HasPrefix(name, "@") && len(a) > 1 {
@@ -222,6 +382,7 @@ func fetchPackageInfo(name string, version string) (info NpmPackageInfo, err err
 		var data []byte
 		data, err = cache.Get(cacheKey)
 		if err == nil && json.Unmarshal(data, &info) == nil {
+			log.Infof("[old] cache hit: %s", cacheKey)
 			return
 		}
 		if err != nil && err != storage.ErrNotFound && err != storage.ErrExpired {
@@ -346,6 +507,266 @@ func fetchPackageInfo(name string, version string) (info NpmPackageInfo, err err
 		cache.Set(cacheKey, utils.MustEncodeJSON(info), 10*time.Minute)
 	}
 	return
+}
+
+func fetchFullPackageInfo(nv NameVersion) (info NpmPackageInfo, err error) {
+
+	cacheKey := fmt.Sprintf("npm-fp:%s", nv.String())
+
+	log.Debugf("fetchFullPackageInfo: %s, cacheKey: %s", nv.String(), cacheKey)
+	lock := getFetchLock(cacheKey)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// check cache firstly
+	if cache != nil {
+		var data []byte
+		data, err = cache.Get(cacheKey)
+		if err == nil && json.Unmarshal(data, &info) == nil {
+			log.Infof("cache hit: %s", cacheKey)
+			return
+		}
+		if err != nil && err != storage.ErrNotFound && err != storage.ErrExpired {
+			log.Error("cache:", err)
+		}
+	}
+
+	start := time.Now()
+	defer func() {
+		if err == nil {
+			log.Debugf("lookup package(%s@%s) in %v", nv.String(), info.Version, time.Since(start))
+		}
+	}()
+
+	pkgBytes, err := fetchPackageJson(nv)
+
+	if err != nil {
+		log.Debugf("fetchPackageJson error: %s", err)
+		log.Infof("fetchPackageJson going to try and download the tarball instead")
+
+		tarballBytes, tarballErr := fetchPackageJsonFromTarball(nv)
+
+		if tarballErr != nil {
+			log.Debug("fetchPackageJsonFromTarball error: ", tarballErr)
+			err = tarballErr
+			return
+		} else {
+			err = nil
+		}
+
+		pkgBytes = tarballBytes
+	}
+
+	if err != nil {
+		return
+	}
+
+	err = json.NewDecoder(bytes.NewReader(pkgBytes)).Decode(&info)
+
+	if err != nil {
+		return
+	}
+
+	if cache != nil {
+
+		// Note (Important!): we store the raw json data in the cache
+		// Not the NpmPackageInfo struct because it has derived properties
+		// TODO: we could look at making the derived fields getters instead?
+		cache.Set(cacheKey, pkgBytes, 24*time.Hour)
+	}
+	return
+}
+func downloadFile(filepath string, req *http.Request) (err error) {
+
+	if _, err = os.Stat(filepath); err == nil {
+		return
+	}
+
+	os.MkdirAll(path.Dir(filepath), os.ModePerm)
+	// Create the file
+	out, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	// Get the data
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Check server response
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+
+	// Writer the body to file
+	_, err = io.Copy(out, resp.Body)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func fetchPackageJsonFromTarball(nv NameVersion) (bytes []byte, err error) {
+	// err = fmt.Errorf("todo-----")
+
+	packument, err := fetchPackument(nv.Name)
+
+	if err != nil {
+		return
+	}
+
+	nv, err = findBestVersionInPackument(nv, packument)
+
+	if err != nil {
+		return
+	}
+
+	log.Debugf("fetchPackageJsonFromTarball: %s", nv.String())
+
+	tarball := packument.Versions[nv.Version].Dist.Tarball
+
+	req, err := createFetchRequest(tarball)
+
+	if err != nil {
+		return
+	}
+
+	filepath := path.Join(cfg.WorkDir, "tarballs", FilenameFromUrl(tarball))
+	// resp, err := httpClient.Do(req)
+	err = downloadFile(filepath, req)
+
+	if err != nil {
+		return
+	}
+
+	dir, err := tgz.Extract(filepath)
+
+	if err != nil {
+		return
+	}
+
+	// infos, err := ioutil.ReadDir(dir)
+
+	bytes, err = os.ReadFile(path.Join(dir, "package", "package.json"))
+
+	if err != nil {
+		return
+	}
+
+	// remove the file once we're done
+	defer os.Remove(filepath)
+	defer os.RemoveAll(dir)
+
+	// req, err := http.NewRequest("GET", tarball, nil)
+	log.Debugf("fetchPackageJsonFromTarball: %s", tarball)
+
+	return
+}
+
+func fetchPackageJson(nv NameVersion) (bytes []byte, err error) {
+
+	url := createUrl(nv.Name, nv.Version)
+
+	req, err := createFetchRequest(url)
+
+	log.Debugf("pkg: %s scope %s", nv.String(), url)
+
+	resp, err := httpClient.Do(req)
+
+	if err != nil {
+		return
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 || resp.StatusCode == 401 {
+		err = fmt.Errorf("npm: version %s of '%s' not found", nv.Version, nv.Name)
+		return
+	}
+
+	log.Debugf("response status code: %d", resp.StatusCode)
+
+	if resp.StatusCode != 200 {
+		ret, _ := io.ReadAll(resp.Body)
+		err = fmt.Errorf("npm: could not get metadata of package '%s' (%s: %s)", nv.String(), resp.Status, string(ret))
+		return
+	}
+
+	bytes, err = io.ReadAll(resp.Body)
+
+	return
+}
+
+func findBestVersionInPackument(nv NameVersion, packument Packument) (out NameVersion, err error) {
+
+	log.Debugf("findBestVersionInPackument: %s", nv.String())
+	distVersion, ok := packument.DistTags[nv.Version]
+	if ok {
+
+		out = NameVersion{nv.Name, distVersion}
+		log.Debugf("findBestVersionInPackument: out: %s", out.String())
+	} else {
+
+		log.Debugf("findBestVersionInPackument: distVersion not found: %s, doing a semver match", nv.Version)
+		// find the best version from what's available to match the target version
+		bestVersion, versionErr := FindBestVersion(nv.Version, KeysFromMap(packument.Versions))
+
+		if versionErr != nil {
+			// TODO: replace this?
+			err = versionErr
+			return
+		}
+		out = NameVersion{nv.Name, bestVersion}
+	}
+	log.Debugf("findBestVersionInPackument: out: %s", out.String())
+	return
+}
+
+func newFetchPackageInfo(name string, version string) (info NpmPackageInfo, err error) {
+
+	nv := NewNameVersion(name, version)
+
+	if nv.IsFullVersion() {
+		return fetchFullPackageInfo(nv)
+	} else {
+		// We need to look up the best version to load
+		packument, pe := fetchPackument(nv.Name)
+
+		if pe != nil {
+			err = pe
+			return
+		}
+
+		nv, err = findBestVersionInPackument(nv, packument)
+
+		if err != nil {
+			return
+		}
+
+		return fetchFullPackageInfo(nv)
+
+		// eg latest => 1.2.3
+		// distVersion, ok := packument.DistTags[nv.Version]
+		// if ok {
+		// 	return fetchFullPackageInfo(NameVersion{nv.Name, distVersion})
+		// } else {
+
+		// 	// find the best version from what's available to match the target version
+		// 	bestVersion, versionErr := FindBestVersion(nv.Version, KeysFromMap(packument.Versions))
+
+		// 	if versionErr != nil {
+		// 		// TODO: replace this?
+		// 		err = versionErr
+		// 		return
+		// 	}
+		// }
+	}
 }
 
 func installPackage(wd string, pkg Pkg) (err error) {
