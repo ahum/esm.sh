@@ -3,7 +3,7 @@
 # Build Stage
 #
 #######################################
-FROM golang:1.20-alpine AS build-stage
+FROM golang:1.21-alpine AS build-stage
 
 ENV ESM_SH_VERSION v135
 # ENV ESM_SH_GIT_URL https://github.com/esm-dev/esm.sh
