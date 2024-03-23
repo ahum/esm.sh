@@ -18,6 +18,8 @@ func jsonString(d NpmPackageInfo) string {
 	return string(one)
 }
 
+// TestGithubPackage tests the fetchPackageInfo function
+// This will fallback to dling the tarball.
 func TestGithubPackage(t *testing.T) {
 	cfg = config.Default()
 	// Make sure we use the new fetch
