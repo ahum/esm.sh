@@ -308,18 +308,24 @@ func fetchPackument(name string) (packument Packument, err error) {
 
 func createUrl(name string, version string) string {
 
+	log.Debugf("[createUrl]: %s, %s, registry:", name, version)
+	log.Debugf("[createUrl]: registry: %s, scope: %s", cfg.NpmRegistry, cfg.NpmRegistryScope)
+
 	url := cfg.NpmRegistry + name
+
 	if cfg.NpmRegistryScope != "" {
 		isInScope := strings.HasPrefix(name, cfg.NpmRegistryScope)
 		if !isInScope {
 			url = "https://registry.npmjs.org/" + name
 		}
+	} else {
+		log.Debug("no npm registry scope")
 	}
 
 	if version != "" {
 		url += "/" + version
 	}
-	log.Debugf("pkg: %s scope %s", name, url)
+	log.Debugf("[createUrl] pkg: %s --> url: %s", name, url)
 	return url
 }
 
@@ -339,10 +345,14 @@ func createFetchRequest(url string) (req *http.Request, err error) {
 
 	if cfg.NpmToken != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.NpmToken)
+	} else {
+		log.Debug("no npm token")
 	}
 
 	if cfg.NpmUser != "" && cfg.NpmPassword != "" {
 		req.SetBasicAuth(cfg.NpmUser, cfg.NpmPassword)
+	} else {
+		log.Debug("no npm user or password")
 	}
 
 	return
