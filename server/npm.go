@@ -284,8 +284,11 @@ func fetchPackument(name string) (packument Packument, err error) {
 
 	defer resp.Body.Close()
 
+	log.Debugf("response status code: %d", resp.StatusCode)
+
 	if resp.StatusCode == 404 || resp.StatusCode == 401 {
-		err = fmt.Errorf("npm: package '%s' not found", name)
+		ret, _ := io.ReadAll(resp.Body)
+		err = fmt.Errorf("npm: %v  '%s' (%s: %s)", resp.StatusCode, name, resp.Status, string(ret))
 		return
 	}
 
@@ -315,6 +318,8 @@ func createUrl(name string, version string) string {
 
 	if cfg.NpmRegistryScope != "" {
 		isInScope := strings.HasPrefix(name, cfg.NpmRegistryScope)
+
+		log.Debugf("[createUrl] isInScope: %t, name: %s, scope: %s", isInScope, name, cfg.NpmRegistryScope)
 		if !isInScope {
 			url = "https://registry.npmjs.org/" + name
 		}
