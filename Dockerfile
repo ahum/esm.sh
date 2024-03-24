@@ -4,8 +4,9 @@
 #
 #######################################
 FROM golang:1.21-alpine AS build-stage
+ARG ESM_SH_VERSION="v000"
+ENV ESM_SH_VERSION=$ESM_SH_VERSION
 
-ENV ESM_SH_VERSION v135
 # ENV ESM_SH_GIT_URL https://github.com/esm-dev/esm.sh
 
 RUN apk update && apk add --no-cache git
