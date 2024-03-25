@@ -35,6 +35,7 @@ type Config struct {
 	NpmPassword      string    `json:"npmPassword,omitempty"`
 	NoCompress       bool      `json:"noCompress,omitempty"`
 	UseNewFetch      bool      `json:"useNewFetch,omitempty"`
+	ForceProto       string    `json:"forceProto,omitempty"`
 }
 
 type BanList struct {
@@ -190,6 +191,10 @@ func fixConfig(c *Config) *Config {
 
 	if !c.UseNewFetch {
 		c.UseNewFetch = os.Getenv("USE_NEW_FETCH") == "true"
+	}
+
+	if c.ForceProto == "" {
+		c.ForceProto = os.Getenv("FORCE_PROTO")
 	}
 
 	return c

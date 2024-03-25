@@ -1169,19 +1169,35 @@ func esmHandler() rex.Handle {
 	}
 }
 
-func getCdnOrign(ctx *rex.Context) string {
-	cdnOrigin := ctx.R.Header.Get("X-Real-Origin")
-	if cdnOrigin == "" {
-		cdnOrigin = cfg.CdnOrigin
+func getProto(ctx *rex.Context) string {
+	if cfg.ForceProto != "" {
+		return cfg.ForceProto
 	}
-	if cdnOrigin == "" {
-		proto := "http"
-		if ctx.R.TLS != nil {
-			proto = "https"
-		}
-		// use the request host as the origin if not set in config.json
-		cdnOrigin = fmt.Sprintf("%s://%s", proto, ctx.R.Host)
+
+	proto := "http"
+
+	if ctx.R.TLS != nil {
+		proto = "https"
 	}
+
+	return proto
+}
+
+func getCdnOrign(ctx *rex.Context) (cdnOrigin string) {
+	cdnOrigin = ctx.R.Header.Get("X-Real-Origin")
+	if cdnOrigin != "" {
+		return
+	}
+
+	cdnOrigin = cfg.CdnOrigin
+
+	if cdnOrigin != "" {
+		return
+	}
+	proto := getProto(ctx)
+
+	// use the request host as the origin if not set in config.json
+	cdnOrigin = fmt.Sprintf("%s://%s", proto, ctx.R.Host)
 	return cdnOrigin
 }
 
