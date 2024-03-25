@@ -57,6 +57,11 @@ func Serve(efs EmbedFS) {
 			fmt.Println(err.Error())
 			os.Exit(1)
 		}
+
+		if isDev {
+			log.Debugf("Config: %+v", cfg)
+
+		}
 		fmt.Println("Config loaded from", cfile)
 	}
 
@@ -162,7 +167,7 @@ func Serve(efs EmbedFS) {
 	})
 
 	if isDev {
-		log.Debugf("Server is ready on http://localhost:%d", cfg.Port)
+		log.Infof("Server is ready on http://localhost:%d", cfg.Port)
 		log.Debugf("Testing page at http://localhost:%d?test", cfg.Port)
 	} else {
 		log.Info("Server is ready")

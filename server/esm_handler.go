@@ -25,6 +25,8 @@ func esmHandler() rex.Handle {
 
 	return func(ctx *rex.Context) interface{} {
 		pathname := ctx.Path.String()
+
+		log.Debugf("[esmHandler] pathname: %s", pathname)
 		userAgent := ctx.R.UserAgent()
 		header := ctx.W.Header()
 		cdnOrigin := getCdnOrign(ctx)
